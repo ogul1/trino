@@ -1,0 +1,198 @@
+# An envar that signals to tests we are executing in the CI environment
+# allow overriding Maven command
+# maven.wagon.rto is in millis, defaults to 30m
+# Cancel previous PR builds.
+# Cancel all workflow runs except latest within a concurrency group. This is achieved by defining a concurrency group for the PR.
+# Non-PR builds have singleton concurrency groups.
+# Avoid creating a cache entry because this job doesn't download all dependencies
+# Generate a valid artifact name and make it available to next steps as
+# an environment variable ARTIFACT_NAME
+# ", :, <, >, |, *, ?, \, / are not allowed in artifact names but we only use : so we remove it
+# Avoid creating a cache entry because this job doesn't download all dependencies
+
+name: Modified docs
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+env:
+  CONTINUOUS_INTEGRATION: true
+  MAVEN: ./mvnw
+  MAVEN_OPTS: -Xmx512M -XX:+ExitOnOutOfMemoryError -Dmaven.wagon.rto=60000
+  MAVEN_INSTALL_OPTS: -Xmx2G -XX:+ExitOnOutOfMemoryError -Dmaven.wagon.rto=60000
+  MAVEN_FAST_INSTALL: -B --strict-checksums -V --quiet -T 1C -DskipTests -Dair.check.skip-all
+  MAVEN_TEST: -B --strict-checksums -Dair.check.skip-all --fail-at-end
+  RETRY: .github/bin/retry
+jobs:
+  path-filters:
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+      other: ${{ steps.filter.outputs.other }}
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-path-filters.csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/trino/trino', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+      id: filter
+      with:
+        filters: |-
+          docs: 'docs/**'
+          other: '!docs/**'
+    - run: touch optcd-3.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-path-filters
+        path: /home/runner/inotifywait-log-path-filters.csv
+    name: path-filters
+  docs-checks:
+    needs: path-filters
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-docs-checks.csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/trino/trino', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - uses: actions/checkout@v4
+    - run: touch optcd-3.txt
+    - uses: ./.github/actions/setup
+      timeout-minutes: 10
+    - run: touch optcd-4.txt
+    - name: Maven Checks
+      run: |-
+        export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
+        $RETRY $MAVEN install -B --strict-checksums -V -T 1C -DskipTests -P ci -am -pl ':trino-docs'
+    - run: touch optcd-5.txt
+    - name: Clean local Maven repo
+      run: rm -rf ~/.m2/repository
+    - run: touch optcd-6.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-docs-checks
+        path: /home/runner/inotifywait-log-docs-checks.csv
+    name: docs-checks
+  test-docs:
+    needs: path-filters
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        modules:
+        - :trino-main
+        - :trino-plugin-toolkit
+        - :trino-resource-group-managers
+        - :trino-tests
+    timeout-minutes: 60
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-test-docs (${{ matrix.modules }}).csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/trino/trino', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - run: touch optcd-3.txt
+    - uses: ./.github/actions/setup
+      timeout-minutes: 10
+    - run: touch optcd-4.txt
+    - name: Maven Install
+      run: |-
+        export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
+        $RETRY $MAVEN install ${MAVEN_FAST_INSTALL} -am -pl $(echo '${{ matrix.modules }}' | cut -d' ' -f1)
+    - run: touch optcd-5.txt
+    - name: Maven Tests
+      id: tests
+      run: $MAVEN test ${MAVEN_TEST} -pl ${{ matrix.modules }}
+    - run: touch optcd-6.txt
+    - name: Sanitize artifact name
+      run: |-
+        # Generate a valid artifact name and make it available to next steps as
+        # an environment variable ARTIFACT_NAME
+        # ", :, <, >, |, *, ?, \, / are not allowed in artifact names but we only use : so we remove it
+        name=$(echo -n "${{ matrix.modules }}" | sed -e 's/[:]//g')
+        echo "ARTIFACT_NAME=$name" >> $GITHUB_ENV
+    - run: touch optcd-7.txt
+    - name: Upload test results
+      uses: ./.github/actions/process-test-results
+      with:
+        artifact-name: ${{ env.ARTIFACT_NAME }}
+        has-failed-tests: ${{ steps.tests.outcome == 'failure' }}
+    - run: touch optcd-8.txt
+    - name: Clean local Maven repo
+      run: rm -rf ~/.m2/repository
+    - run: touch optcd-9.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-test-docs (${{ matrix.modules }})
+        path: /home/runner/inotifywait-log-test-docs (${{ matrix.modules }}).csv
+    name: test-docs (${{ matrix.modules }})
+'on':
+- push
+- workflow_dispatch
